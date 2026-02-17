@@ -323,7 +323,7 @@ void HandleLongButtonPress() {
   delay(200);
 
 
-  setupWiFi();       // shows IP on display, waits 3s, clears screen
+  setupWiFi();
   setupWebServer();
 
   // Draw SETUP MODE indicator after setupWiFi() is done
