@@ -334,24 +334,79 @@ void HandleLongButtonPress() {
   dma_display->print("SETUP MODE");
   dma_display->setCursor(2, 12);
   dma_display->print(WiFi.softAPSSID());
-  dma_display->setCursor(2, 32);
+  dma_display->setCursor(7, 22);
   dma_display->print(WiFi.softAPIP().toString());
+  dma_display->setCursor(16, 32);
+  dma_display->print("Hold to erase Memory");
 
   Serial.println("SETUP mode active. Press button again to exit.");
 
   // Serve clients until button is pressed again
   while (true) {
     server.handleClient();
-    delay(1);
+    delay(1000);
 
-    if (digitalRead(BUTTON_PIN) == LOW) {
-      delay(50);
-      if (digitalRead(BUTTON_PIN) == LOW) {
-        while (digitalRead(BUTTON_PIN) == LOW) { delay(10); }
-        delay(50);
-        break;
-      }
+    
+  static bool lastButtonState = HIGH;
+  static bool buttonPressed = false;
+  static unsigned long pressStartTime = 0;
+  static bool longPressHandled = false;
+
+  bool currentState = digitalRead(BUTTON_PIN);
+
+  // Button just pressed
+  if (lastButtonState == HIGH && currentState == LOW) {
+    buttonPressed = true;
+    pressStartTime = millis();
+    longPressHandled = false;
+  }
+
+  // Button held down
+  if (buttonPressed && currentState == LOW) {
+    if (!longPressHandled &&
+        millis() - pressStartTime >= LONG_PRESS_TIME) {
+      longPressHandled = true;
+      dma_display->clearScreen();
+      dma_display->setTextColor(dma_display->color565(0, 255, 0));
+      dma_display->setTextSize(1);
+      dma_display->setCursor(2, 2);
+      dma_display->print("FORMATING...");
+      SPIFFS.format();
+      dma_display->clearScreen();
+      dma_display->setTextColor(dma_display->color565(0, 255, 0));
+      dma_display->setTextSize(1);
+      dma_display->setCursor(2, 2);
+      dma_display->print("MEMORY(SPIFFS)");
+      dma_display->setCursor(2, 12);
+      dma_display->print("FORMATED");
+      delay(2000);
+
+
+      dma_display->clearScreen();
+      dma_display->setTextColor(dma_display->color565(0, 255, 0));
+      dma_display->setTextSize(1);
+      dma_display->setCursor(2, 2);
+      dma_display->print("SETUP MODE");
+      dma_display->setCursor(2, 12);
+      dma_display->print(WiFi.softAPSSID());
+      dma_display->setCursor(7, 22);
+      dma_display->print(WiFi.softAPIP().toString());
+      dma_display->setCursor(16, 32);
+      dma_display->print("Hold to erase Memory");
+
     }
+  }
+
+  // Button released
+  if (lastButtonState == LOW && currentState == HIGH) {
+    if (buttonPressed && !longPressHandled) {
+      break;
+    }
+    buttonPressed = false;
+  }
+
+  lastButtonState = currentState;
+
   }
 
   Serial.println("Exiting SETUP mode...");
