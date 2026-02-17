@@ -342,15 +342,13 @@ void HandleLongButtonPress() {
   Serial.println("SETUP mode active. Press button again to exit.");
 
   // Serve clients until button is pressed again
+      bool lastButtonState  = HIGH;   // NOT static
+    bool buttonPressed    = false;
+    unsigned long pressStartTime = 0;
+    bool longPressHandled = false;
   while (true) {
     server.handleClient();
-    delay(1000);
-
-    
-  static bool lastButtonState = HIGH;
-  static bool buttonPressed = false;
-  static unsigned long pressStartTime = 0;
-  static bool longPressHandled = false;
+    delay(1);
 
   bool currentState = digitalRead(BUTTON_PIN);
 
@@ -552,8 +550,10 @@ bool ConnectToStoredWiFi() {
   String ssid = ssidLine.substring(5);
   String password = passLine.substring(9);
 
-  Serial.print("Laczenie z WiFi: ");
+  Serial.print("Laczenie z WiFi:");
   Serial.println(ssid);
+  Serial.print(";");
+  Serial.println(password);
 
   WiFi.disconnect(true, true);
   delay(300);
