@@ -51,6 +51,7 @@ const char* password = "setuppassword123";
 #define TYPE_FILE "/type.txt"         // Stores "image" or "gif"
 #define STORED_WIFI "/cred.txt"
 #define STORED_BRIGHTNESS "/brightness.txt"
+#define STORED_SPEED "/speed.txt"
 
 
 // ========== GLOBAL OBJECTS ==========
@@ -64,6 +65,7 @@ uint8_t* gifData = nullptr;
 size_t gifSize = 0;
 uint8_t brightness = 90;
 const unsigned long LONG_PRESS_TIME = 1200;  // ms
+float gifSpeed = 1.0f;
 
 
 
@@ -87,6 +89,7 @@ void HandleShortButtonPress();
 void PostBrightness();
 void GetBrightness();
 uint8_t ReadBrightness();
+float ReadGifSpeed();
 
 
 void WiFiEvent(WiFiEvent_t event) {
@@ -156,10 +159,14 @@ void setup() {
   mxconfig.gpio.oe = OE_PIN;
   mxconfig.gpio.clk = CLK_PIN;
 
+
   dma_display = new MatrixPanel_I2S_DMA(mxconfig);
   dma_display->begin();
   brightness = ReadBrightness();
+
   dma_display->setBrightness8(brightness);
+  gifSpeed = ReadGifSpeed();
+
   dma_display->clearScreen();
 
   Serial.println("✓ Matrix initialized");
@@ -242,10 +249,30 @@ void loop() {
 
 
   if (isPlayingGif && gifData != nullptr) {
-    gif.playFrame(true, nullptr);
-  }
+    if (gifSpeed <= 0.01f) {
+        delay(50);
+    } else {
+        int frameDelayMs = 0;
+        gif.playFrame(true, &frameDelayMs);
+        if (gifSpeed < 1.0f && frameDelayMs > 0) {
+            int extra = (int)(frameDelayMs * (1.0f / gifSpeed - 1.0f));
+            delay(extra);
+        }
+    }
+}
 
   delay(1);
+}
+
+float ReadGifSpeed() {
+    if (!SPIFFS.exists(STORED_SPEED)) return 1.0f;
+    File file = SPIFFS.open(STORED_SPEED, "r");
+    if (!file) return 1.0f;
+    String line = file.readStringUntil('\n');
+    file.close();
+    line.trim();
+    if (!line.startsWith("speed=")) return 1.0f;
+    return line.substring(6).toFloat();
 }
 
 
@@ -628,6 +655,32 @@ void setupWebServer() {
   server.on("/postbrightness",HTTP_POST,PostBrightness);
   server.on("/getbrightness",HTTP_GET,GetBrightness);
 
+
+  server.on("/getspeed", HTTP_GET, []() {
+    String json = "{\"speed\":\"" + String(gifSpeed) + "\"}";
+    server.send(200, "application/json", json);
+  });
+
+  server.on("/postspeed", HTTP_POST, []() {
+    if (!server.hasArg("speed")) {
+        server.send(400, "text/plain", "Missing speed");
+        return;
+    }
+    String val = server.arg("speed");
+    val.trim();
+    gifSpeed = val.toFloat();
+    gifSpeed = max(0.0f, min(1.0f, gifSpeed));
+
+    File file = SPIFFS.open(STORED_SPEED, FILE_WRITE);
+    if (file) {
+        file.print("speed=");
+        file.println(gifSpeed);
+        file.close();
+    }
+    server.send(200, "text/plain", "Speed saved");
+  });
+
+
   // Handle upload with proper body parsing
   server.on("/upload", HTTP_POST, 
     []() {
@@ -683,18 +736,31 @@ void setupWebServer() {
           Serial.printf("  Received: %d bytes (total: %d)\n", upload.currentSize, totalSize);
         }
       }
-      else if (upload.status == UPLOAD_FILE_END) {
-        if (uploadFile) {
-          uploadFile.close();
-          Serial.printf("✓ Upload complete: %d bytes\n", totalSize);
-          Serial.println("✓ Saved to flash storage");
-          
-          // Display immediately
-          dma_display->clearScreen();
-          loadAndDisplayStored();
-          Serial.println("✓ Content stored permanently!\n");
+
+
+
+    else if (upload.status == UPLOAD_FILE_END) {
+    if (uploadFile) {
+        uploadFile.close();
+        Serial.printf("Upload complete: %d bytes\n", totalSize);
+
+        // Stop any playing GIF before showing new content —
+        // otherwise the GIF loop overwrites the new image immediately.
+        isPlayingGif = false;
+        gif.close();
+        if (gifData) {
+            free(gifData);
+            gifData = nullptr;
         }
-      }
+
+        dma_display->clearScreen();
+        delay(50);  // small pause so the clear actually renders
+        loadAndDisplayStored();
+    }
+}
+
+
+
     }
   );
   
@@ -1017,20 +1083,74 @@ uint8_t ReadBrightness()
 
 // ========== BOOT ANIMATION ==========
 void displayBootAnimation() {
-  Serial.println("Boot animation...");
-  
-  for (int frame = 0; frame < 20; frame++) {
-    for (int x = 0; x < 64; x++) {
-      for (int y = 0; y < 64; y++) {
-        float distance = sqrt(pow(x - 32, 2) + pow(y - 32, 2));
-        uint8_t r = (uint8_t)(128 + 127 * sin(distance * 0.2 - frame * 0.3));
-        uint8_t g = (uint8_t)(128 + 127 * sin(distance * 0.2 - frame * 0.3 + 2.0));
-        uint8_t b = (uint8_t)(128 + 127 * sin(distance * 0.2 - frame * 0.3 + 4.0));
-        dma_display->drawPixelRGB888(x, y, r, g, b);
-      }
+    Serial.println("Boot animation...");
+
+    const int   CX          = 32;
+    const int   CY          = 32;
+    const int   FRAMES      = 35;       // total frames – keep it snappy
+    const float MAX_DIST    = 46.0f;    // rough radius to screen corner
+    const float RING_WIDTH  = 10.0f;    // how thick the leading ring is
+    const float SPIRAL_WRAP = 0.18f;    // how tightly the arms curl
+    const float SPIN_SPEED  = 0.30f;    // rotation per frame (radians)
+
+    for (int frame = 0; frame < FRAMES; frame++) {
+        float progress  = (float)frame / (FRAMES - 1);          // 0 → 1
+        float ringFront = MAX_DIST * (1.0f - progress);         // shrinks edge→centre
+
+        for (int x = 0; x < 64; x++) {
+            for (int y = 0; y < 64; y++) {
+                float dx   = x - CX;
+                float dy   = y - CY;
+                float dist = sqrtf(dx * dx + dy * dy);
+                float ang  = atan2f(dy, dx);
+
+                // Spiral phase: pixels further out are rotated more,
+                // plus the whole vortex spins as frames advance.
+                float phase = ang + dist * SPIRAL_WRAP - frame * SPIN_SPEED;
+
+                // Intensity: bright at the leading ring, fades behind it.
+                float ringDelta = dist - ringFront;             // >0 = outside ring (not yet lit)
+                float intensity;
+                if (ringDelta > 0.0f) {
+                    intensity = 0.0f;                           // ahead of the wave = dark
+                } else {
+                    intensity = expf(ringDelta / RING_WIDTH);   // exponential fade behind
+                }
+
+                // Add a soft swirl shimmer on top of the base intensity.
+                float shimmer = 0.5f + 0.5f * sinf(phase * 3.0f);
+                float bright  = intensity * (0.6f + 0.4f * shimmer);
+
+                // Toned, cool palette: teal → blue → purple hues.
+                // Keeping max channel values low (~180) avoids eye-searing brightness.
+                uint8_t r = (uint8_t)(bright * (50  + 40  * sinf(phase + 4.0f)));
+                uint8_t g = (uint8_t)(bright * (120 + 60  * sinf(phase + 2.0f)));
+                uint8_t b = (uint8_t)(bright * (160 + 60  * sinf(phase)));
+
+                dma_display->drawPixelRGB888(x, y, r, g, b);
+            }
+        }
+
+        delay(20);  // ~50 fps cap; total ~700 ms for the full animation
     }
-    delay(30);
-  }
-  
-  dma_display->clearScreen();
+
+    // Fade out quickly rather than hard-cutting to black
+    for (int fade = 8; fade >= 0; fade--) {
+        float f = (float)fade / 8.0f;
+        for (int x = 0; x < 64; x++) {
+            for (int y = 0; y < 64; y++) {
+                float dx = x - CX, dy = y - CY;
+                float dist = sqrtf(dx*dx + dy*dy);
+                float ang  = atan2f(dy, dx);
+                float phase = ang + dist * SPIRAL_WRAP;
+                uint8_t r = (uint8_t)(f * (50  + 40  * sinf(phase + 4.0f)));
+                uint8_t g = (uint8_t)(f * (120 + 60  * sinf(phase + 2.0f)));
+                uint8_t b = (uint8_t)(f * (160 + 60  * sinf(phase)));
+                dma_display->drawPixelRGB888(x, y, r, g, b);
+            }
+        }
+        delay(18);
+    }
+
+    dma_display->clearScreen();
 }
