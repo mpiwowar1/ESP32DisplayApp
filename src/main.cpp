@@ -17,11 +17,11 @@
 #include <AnimatedGIF.h>
 #include "esp_wifi.h"
 #include "esp_log.h"
+#include "api.h"
 
 
 // ========== WIFI CONFIGURATION ==========
 const char* ssid = "SetUPMatrix";
-const char* password = "setuppassword123";
 
 
 // ========== PIN CONFIGURATION ==========
@@ -273,39 +273,6 @@ float ReadGifSpeed() {
     line.trim();
     if (!line.startsWith("speed=")) return 1.0f;
     return line.substring(6).toFloat();
-}
-
-
-// =========SETTING BRIGHTNESS =========
-void PostBrightness() {
-    Serial.println("PostBrightness called!");
-
-    if (!server.hasArg("brightness")) {
-        server.send(400, "text/plain", "Missing brightness");
-        return;
-    }
-
-    String brightnesssave = server.arg("brightness");
-    brightnesssave.trim();
-    brightness = (uint8_t)brightnesssave.toInt();
-
-    Serial.printf("Saving brightness: %d\n", brightness);
-
-    File file = SPIFFS.open("/brightness.txt", FILE_WRITE);  // ✅ leading slash
-    if (!file) {
-        Serial.println("Failed to open /brightness.txt for writing");
-        server.send(500, "text/plain", "Failed to open file for writing");
-        return;
-    }
-
-    file.print("brightness=");
-    file.println(brightness);
-    file.close();  // ✅ always close!
-
-    Serial.println("Brightness saved successfully");
-    server.send(200, "text/plain", "Brightness stored successfully");
-
-    dma_display->setBrightness8(brightness);  // ✅ apply directly, no need to re-read
 }
 
 // =========GETTING BRIGHTNESS =========
@@ -652,7 +619,9 @@ void setupWebServer() {
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/delete", HTTP_POST, handleDelete);
   server.on("/cred",HTTP_POST,HandleWifi);
-  server.on("/postbrightness",HTTP_POST,PostBrightness);
+  server.on("/postbrightness",HTTP_POST,[](){
+    PostBrightness(dma_display,&brightness,&server);
+  });
   server.on("/getbrightness",HTTP_GET,GetBrightness);
 
 
