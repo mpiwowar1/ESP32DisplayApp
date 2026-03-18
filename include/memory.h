@@ -18,3 +18,6 @@ void playStoredGif();
 
 // ========== LOAD AND DISPLAY STORED CONTENT ==========
 void loadAndDisplayStored();
+
+// ========== SPIFFS SETUP ==========
+void setupSPIFFS();

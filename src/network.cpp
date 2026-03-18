@@ -86,7 +86,7 @@ bool ConnectToStoredWiFi() {
   delay(300);
 
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);     // VERY important
+  WiFi.setSleep(false);
   delay(300);
 
   WiFi.begin(ssid.c_str(), password.c_str());

@@ -153,3 +153,21 @@ void loadAndDisplayStored() {
     playStoredGif();
   }
 }
+
+void setupSPIFFS() {
+  Serial.println("Initializing flash storage (SPIFFS)...");
+  
+  if (!SPIFFS.begin(true)) {
+    Serial.println("✗ SPIFFS mount failed!");
+    return;
+  }
+
+  Serial.println("✓ SPIFFS mounted");
+  
+  // Show storage info
+  size_t totalBytes = SPIFFS.totalBytes();
+  size_t usedBytes = SPIFFS.usedBytes();
+  Serial.printf("  Total: %d bytes\n", totalBytes);
+  Serial.printf("  Used: %d bytes\n", usedBytes);
+  Serial.printf("  Free: %d bytes\n", totalBytes - usedBytes);
+}
