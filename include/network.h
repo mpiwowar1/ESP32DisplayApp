@@ -1,6 +1,7 @@
 #include "globals.h"
 #include "memory.h"
 #include "api.h"
+#include <ESPmDNS.h>
 
 // ========== WEB SERVER SETUP ==========
 void setupWebServer();

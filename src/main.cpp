@@ -25,6 +25,7 @@
 #include "handlebutton.h"
 #include "bootanimation.h"
 #include "menu.h"
+#include <ESPmDNS.h>
 
 
 
@@ -114,6 +115,8 @@ void setup() {
   if (ConnectToStoredWiFi()) {
       setupWebServer();
   }
+
+
 
 
   dma_display->clearScreen();

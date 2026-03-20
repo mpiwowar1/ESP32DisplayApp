@@ -18,6 +18,7 @@ void setupWebServer() {
     },PostMedia);
   
   server.begin();
+  MDNS.addService("http", "tcp", 80);
   Serial.println("✓ Web server started");
 }
 
@@ -103,6 +104,9 @@ bool ConnectToStoredWiFi() {
     Serial.println("\nPolaczono z WiFi!");
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
+     if(!MDNS.begin("matrix")){
+    Serial.println("ERROR SETTING UP THE DNS");
+    }
     return true;
   } else {
     WiFi.disconnect(true, true);
