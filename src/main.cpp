@@ -24,6 +24,7 @@
 #include "network.h"
 #include "handlebutton.h"
 #include "bootanimation.h"
+#include "menu.h"
 
 
 
@@ -33,9 +34,17 @@
 // ========== FUNCTION PROTOTYPES ==========
 void setupSPIFFS();
 void displayBootAnimation();
-void HandleLongButtonPress();
-void HandleShortButtonPress();
 
+
+
+void doClose() { loadAndDisplayStored(); }
+
+
+MenuItem mainMenu[] = {
+    { "CLOSE", doClose },
+    { "WIFI",  doWifi  },
+    { "SETUP", doSetup },
+};
 
 
 // ========== SETUP ==========
@@ -134,7 +143,9 @@ void loop() {
   server.handleClient();
 
 
-  handleButton(HandleShortButtonPress,HandleLongButtonPress);
+  handleButton(doWifi,[](){
+    showMenu(mainMenu,3);
+  });
 
   if (isPlayingGif && gifData != nullptr) {
     if (gifSpeed <= 0.01f) {
@@ -150,213 +161,4 @@ void loop() {
 }
 
   delay(1);
-}
-
-
-// ======Handling button press(SETUP MODE) ===========
-void HandleLongButtonPress() {
-  Serial.println("Button pressed: entering SETUP mode");
-  dma_display->clearScreen();
-  dma_display->setTextColor(dma_display->color565(0, 255, 0));
-  dma_display->setTextSize(1);
-  dma_display->setCursor(2, 2);
-  dma_display->print("STARTING");
-  dma_display->setCursor(2, 12);
-  dma_display->print("SETUP MODE");
-
-  // Wait for button release before proceeding
-  delay(50);
-  while (digitalRead(BUTTON_PIN) == LOW) { delay(10); }
-  delay(50);
-
-  server.stop();
-  WiFi.softAPdisconnect(true);
-  WiFi.disconnect(true, true);
-  WiFi.mode(WIFI_OFF);
-  delay(1000);
-
-
-  isPlayingGif = false;
-  gif.close();
-
-  dma_display->clearScreen();
-  delay(200);
-
-
-  setupWiFi();
-  setupWebServer();
-
-  // Draw SETUP MODE indicator after setupWiFi() is done
-  dma_display->clearScreen();
-  dma_display->setTextColor(dma_display->color565(0, 255, 0));
-  dma_display->setTextSize(1);
-  dma_display->setCursor(2, 2);
-  dma_display->print("SETUP MODE");
-  dma_display->setCursor(2, 12);
-  dma_display->print(WiFi.softAPSSID());
-  dma_display->setCursor(7, 22);
-  dma_display->print(WiFi.softAPIP().toString());
-  dma_display->setCursor(16, 32);
-  dma_display->print("Hold to erase Memory");
-
-  Serial.println("SETUP mode active. Press button again to exit.");
-
-  // Serve clients until button is pressed again
-      bool lastButtonState  = HIGH;   // NOT static
-    bool buttonPressed    = false;
-    unsigned long pressStartTime = 0;
-    bool longPressHandled = false;
-  while (true) {
-    server.handleClient();
-    delay(1);
-
-  bool currentState = digitalRead(BUTTON_PIN);
-
-  // Button just pressed
-  if (lastButtonState == HIGH && currentState == LOW) {
-    buttonPressed = true;
-    pressStartTime = millis();
-    longPressHandled = false;
-  }
-
-  // Button held down
-  if (buttonPressed && currentState == LOW) {
-    if (!longPressHandled &&
-        millis() - pressStartTime >= LONG_PRESS_TIME) {
-      longPressHandled = true;
-      dma_display->clearScreen();
-      dma_display->setTextColor(dma_display->color565(0, 255, 0));
-      dma_display->setTextSize(1);
-      dma_display->setCursor(2, 2);
-      dma_display->print("FORMATING...");
-      SPIFFS.format();
-      dma_display->clearScreen();
-      dma_display->setTextColor(dma_display->color565(0, 255, 0));
-      dma_display->setTextSize(1);
-      dma_display->setCursor(2, 2);
-      dma_display->print("MEMORY(SPIFFS)");
-      dma_display->setCursor(2, 12);
-      dma_display->print("FORMATED");
-      delay(2000);
-
-
-      dma_display->clearScreen();
-      dma_display->setTextColor(dma_display->color565(0, 255, 0));
-      dma_display->setTextSize(1);
-      dma_display->setCursor(2, 2);
-      dma_display->print("SETUP MODE");
-      dma_display->setCursor(2, 12);
-      dma_display->print(WiFi.softAPSSID());
-      dma_display->setCursor(7, 22);
-      dma_display->print(WiFi.softAPIP().toString());
-      dma_display->setCursor(16, 32);
-      dma_display->print("Hold to erase Memory");
-
-    }
-  }
-
-  // Button released
-  if (lastButtonState == LOW && currentState == HIGH) {
-    if (buttonPressed && !longPressHandled) {
-      break;
-    }
-    buttonPressed = false;
-  }
-
-  lastButtonState = currentState;
-
-  }
-
-  Serial.println("Exiting SETUP mode...");
-  dma_display->clearScreen();
-  dma_display->setTextColor(dma_display->color565(0, 255, 0));
-  dma_display->setTextSize(1);
-  dma_display->setCursor(2, 2);
-  dma_display->print("EXITING &");
-  dma_display->setCursor(2, 12);
-  dma_display->print("CONNECTING");
-  dma_display->setCursor(2, 22);
-  dma_display->print("TO WIFI");
-
-  server.stop();
-  WiFi.softAPdisconnect(true);
-  WiFi.mode(WIFI_OFF);
-  delay(500);
-
-  if (ConnectToStoredWiFi()) {
-    setupWebServer();
-    Serial.println("STA mode restored.");
-    dma_display->clearScreen();
-    dma_display->setTextColor(dma_display->color565(0, 255, 0));
-    dma_display->setTextSize(1);
-    dma_display->setCursor(2, 2);
-    dma_display->print("CONNECTED");
-  } else {
-    Serial.println("Could not connect — check saved credentials.");
-    dma_display->clearScreen();
-    dma_display->setTextColor(dma_display->color565(255, 0, 0));
-    dma_display->setTextSize(1);
-    dma_display->setCursor(2, 2);
-    dma_display->print("WiFi FAIL");
-    dma_display->setCursor(2, 14);
-    dma_display->print("Check cred");
-  }
-  delay(2000);
-  dma_display->clearScreen();
-  loadAndDisplayStored();
-}
-// ========= RECONNECT WIFI IF NOT CONNECTED PLUS INFO ===========
-void HandleShortButtonPress(){
-  dma_display->clearScreen();
-  dma_display->setTextColor(dma_display->color565(255, 0, 0));
-  dma_display->setTextSize(1);
-  dma_display->setCursor(2, 2);
-  dma_display->print("WiFi CheckUp");
-
-  if(WiFi.status() != WL_CONNECTED){
-  server.stop();
-  WiFi.softAPdisconnect(true);
-  WiFi.mode(WIFI_OFF);
-  delay(500);
-
-  if (ConnectToStoredWiFi()) {
-    setupWebServer();
-    Serial.println("STA mode connected");
-  } else {
-    Serial.println("Could not connect");
-    dma_display->clearScreen();
-    dma_display->setTextColor(dma_display->color565(255, 0, 0));
-    dma_display->setTextSize(1);
-    dma_display->setCursor(2, 2);
-    dma_display->print("WiFi FAILED");
-  }
-}
-if(WiFi.status() == WL_CONNECTED){
-    dma_display->clearScreen();
-    dma_display->setTextColor(dma_display->color565(255, 0, 0));
-    dma_display->setTextSize(1);
-    dma_display->setCursor(2, 2);
-    dma_display->print("Connected");
-    dma_display->setCursor(2, 12);
-    dma_display->print(WiFi.SSID());
-    dma_display->setCursor(2, 22);
-    dma_display->print(WiFi.localIP().toString());
-}
-
-while (true) {
-  server.handleClient();
-  delay(1);
-
-  if (digitalRead(BUTTON_PIN) == LOW) {
-    delay(50);
-    if (digitalRead(BUTTON_PIN) == LOW) {
-      while (digitalRead(BUTTON_PIN) == LOW) { delay(10); }
-      delay(50);
-      break;
-    }
-  }
-}
-dma_display->clearScreen();
-loadAndDisplayStored();
-
 }
