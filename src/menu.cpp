@@ -81,21 +81,38 @@ static bool isCutPixel(int px, int py) {
 //  The white box and its bevelled corners are never touched between frames.
 
 static void restoreBand(int y0, int y1) {
+    uint16_t white = dma_display->color565(200, 200, 200);
+    uint16_t black = dma_display->color565(0, 0, 0);
+
     for (int py = y0; py <= y1; py++) {
         if (py < 0 || py >= PANEL_HEIGHT) continue;
 
         bool rowInBox = (py >= BOX_Y && py < BOX_Y + BOX_H);
 
-        for (int px = 0; px < PANEL_WIDTH; px++) {
-            bool inBoxFill = rowInBox
-                             && (px >= BOX_X)
-                             && (px < BOX_X + BOX_W)
-                             && !isCutPixel(px, py);
-
-            if (inBoxFill)
-                dma_display->drawPixelRGB888(px, py, 200, 200, 200);
-            else
-                dma_display->drawPixelRGB888(px, py, 0, 0, 0);
+        if (!rowInBox) {
+            // Entire row is black – one call
+            dma_display->drawFastHLine(0, py, PANEL_WIDTH, black);
+        } else {
+            // Left margin
+            if (BOX_X > 0)
+                dma_display->drawFastHLine(0, py, BOX_X, black);
+            // Box fill (white)
+            dma_display->drawFastHLine(BOX_X, py, BOX_W, white);
+            // Right margin
+            int rx = BOX_X + BOX_W;
+            if (rx < PANEL_WIDTH)
+                dma_display->drawFastHLine(rx, py, PANEL_WIDTH - rx, black);
+            // Punch corner-cut pixels back to black (at most 2 per row)
+            int dT = py - BOX_Y - 1;
+            if (dT >= 0 && dT < CORNER_CUT) {
+                dma_display->drawPixelRGB888(BOX_X + 1 + dT,         py, 0, 0, 0);
+                dma_display->drawPixelRGB888(BOX_X + BOX_W - 2 - dT, py, 0, 0, 0);
+            }
+            int dB = BOX_Y + BOX_H - 2 - py;
+            if (dB >= 0 && dB < CORNER_CUT) {
+                dma_display->drawPixelRGB888(BOX_X + 1 + dB,         py, 0, 0, 0);
+                dma_display->drawPixelRGB888(BOX_X + BOX_W - 2 - dB, py, 0, 0, 0);
+            }
         }
     }
 }
@@ -231,19 +248,65 @@ static void drawFrame(MenuItem* items, int count, int snapIdx, int offset,
         dma_display->clearScreen();
         drawBackground();
     } else {
-        // Animation: erase only the 9-row band around each word.
-        // The extra row (+8 instead of +7) covers the one trailing pixel
-        // that slips below the glyph as it scrolls upward each frame.
-        restoreBand(PREV_Y  + offset, PREV_Y  + offset + 8);
-        restoreBand(SEL_Y   + offset, SEL_Y   + offset + 8);
-        restoreBand(NEXT_Y  + offset, NEXT_Y  + offset + 8);
-        restoreBand(AFTER_Y + offset, AFTER_Y + offset + 8);
+        // Animation: erase only the 11-row band around each word.
+        // -1 / +9 (one extra row each side) eliminates any 1-pixel off-by-one
+        // artifact left by the previous frame as words scroll upward.
+        restoreBand(PREV_Y  + offset - 1, PREV_Y  + offset + 9);
+        restoreBand(SEL_Y   + offset - 1, SEL_Y   + offset + 9);
+        restoreBand(NEXT_Y  + offset - 1, NEXT_Y  + offset + 9);
+        restoreBand(AFTER_Y + offset - 1, AFTER_Y + offset + 9);
     }
 
     drawWord(items[mod(snapIdx - 1)].label, PREV_Y  + offset);
     drawWord(items[mod(snapIdx    )].label, SEL_Y   + offset);
     drawWord(items[mod(snapIdx + 1)].label, NEXT_Y  + offset);
     drawWord(items[mod(snapIdx + 2)].label, AFTER_Y + offset);
+}
+
+// ── Private: hold-to-confirm animation ───────────────────────────────────────
+//
+//  Repaints only the selection-box region so the words outside are untouched.
+//
+//  @param t        Progress 0.0 → 1.0 over LONG_PRESS_TIME.
+//                  Triangle wave: box goes black → white (0..0.5)
+//                                 then white → black (0.5..1.0).
+//  @param word     The currently selected label (drawn centred in the box).
+
+// ── Private: hold-to-confirm animation ───────────────────────────────────────
+//
+//  Draws a small pie-chart progress circle in the top-right corner.
+//  A dim grey disc shows the full track; a white arc fills clockwise from
+//  the top as t goes 0.0 → 1.0.  Only the circle's bounding box is touched.
+
+static const int HOLD_CX = PANEL_WIDTH - 7;   // centre x  (top-right corner)
+static const int HOLD_CY = 6;                  // centre y
+static const int HOLD_R  = 5;                  // radius in pixels
+
+static void drawHoldFrame(float t) {
+    float sweep = t * 2.0f * (float)M_PI;   // filled arc, radians clockwise
+
+    for (int py = HOLD_CY - HOLD_R - 1; py <= HOLD_CY + HOLD_R + 1; py++) {
+        for (int px = HOLD_CX - HOLD_R - 1; px <= HOLD_CX + HOLD_R + 1; px++) {
+            if (px < 0 || px >= PANEL_WIDTH || py < 0 || py >= PANEL_HEIGHT) continue;
+
+            float dx   = (float)(px - HOLD_CX);
+            float dy   = (float)(py - HOLD_CY);
+            float dist = sqrtf(dx * dx + dy * dy);
+
+            if (dist > (float)HOLD_R + 0.5f) {
+                dma_display->drawPixelRGB888(px, py, 0, 0, 0);   // outside – black
+            } else {
+                // atan2(dx, -dy): 0 at top, increases clockwise
+                float angle = atan2f(dx, -dy);
+                if (angle < 0.0f) angle += 2.0f * (float)M_PI;
+
+                if (angle <= sweep)
+                    dma_display->drawPixelRGB888(px, py, 255, 255, 255);  // filled arc
+                else
+                    dma_display->drawPixelRGB888(px, py, 50,  50,  50);   // dim track
+            }
+        }
+    }
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -275,12 +338,16 @@ void showMenu(MenuItem* items, int count) {
             longHandled = false;
         }
 
-        // Button held - fire long-press once
-        if (btnPressed && btnState == LOW) {
-            if (!longHandled && (millis() - pressStart >= LONG_PRESS_TIME)) {
-                longHandled = true;
+        // Button held - draw circular progress, confirm when full
+        if (btnPressed && btnState == LOW && !longHandled) {
+            unsigned long held = millis() - pressStart;
+            float t = (float)held / (float)LONG_PRESS_TIME;
+            if (t > 1.0f) t = 1.0f;
 
-                // Confirm selection
+            drawHoldFrame(t);
+
+            if (held >= LONG_PRESS_TIME) {
+                longHandled = true;
                 dma_display->clearScreen();
                 if (items[currentIdx].onSelect)
                     items[currentIdx].onSelect();
@@ -291,6 +358,8 @@ void showMenu(MenuItem* items, int count) {
         // Rising edge - button released
         if (lastState == LOW && btnState == HIGH) {
             if (btnPressed && !longHandled) {
+                // Erase the partial circle before scrolling
+                drawHoldFrame(0.0f);
 
                 // Scroll animation.
                 // Start at f=1: frame 0 (offset=0) is already on screen,
