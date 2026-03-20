@@ -43,7 +43,7 @@ void doClose() { loadAndDisplayStored(); }
 
 MenuItem mainMenu[] = {
     { "CLOSE", doClose },
-    { "WIFI",  doWifi  },
+    { "WI-FI",  doWifi  },
     { "SETUP", doSetup },
 };
 

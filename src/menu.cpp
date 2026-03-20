@@ -4,6 +4,8 @@
 /*
  * ═══════════════════════════════════════════════════════════════
  *  menu.cpp  –  Scrolling menu with per-pixel-row dimming
+ *              (flicker-reduced: background drawn once, only
+ *               text bands refreshed during animation)
  * ═══════════════════════════════════════════════════════════════
  *
  *  Key fix vs the previous version:
@@ -16,6 +18,13 @@
  *         dimming = 255 × (|32 − pixelY| / 32)²   (curved falloff)
  *         p       = 0   if pixelY is inside the selection box
  *                   255 − dimming  otherwise
+ *
+ *  Anti-flicker change:
+ *    OLD: every animation frame calls clearScreen() + drawBackground()
+ *         → white box flashes black on every frame.
+ *    NEW: background is drawn ONCE on full redraws.  During animation
+ *         only the 9-row band around each word is restored to its
+ *         background colour, then the word is redrawn on top.
  *
  *  Each glyph is 6 × 8 px (5 data columns + 1 gap column).
  *  Pixel data is read from PROGMEM via menuFontPixel().
@@ -40,10 +49,60 @@ static const int ANIM_FRAMES   = 20;  // frames per scroll
 static const int ANIM_DELAY_MS = 40;  // ms per frame (~25 fps)
 static const int ANIM_STEP_PX  =  1;  // px moved per frame (20 × 1 = 20 px total)
 
+// ── Private: O(1) corner-cut checker ─────────────────────────────────────────
+//
+//  Returns true if (px, py) is one of the bevelled corner pixels drawn by
+//  drawBackground().  Used by restoreBand() so it can reproduce the exact
+//  corner pattern without re-running the full drawBackground() loop.
+
+static bool isCutPixel(int px, int py) {
+    // Top-edge diagonals  (row BOX_Y+1+i  →  i = py-BOX_Y-1)
+    int dT = py - BOX_Y - 1;
+    if (dT >= 0 && dT < CORNER_CUT) {
+        if (px == BOX_X + 1 + dT || px == BOX_X + BOX_W - 2 - dT)
+            return true;
+    }
+    // Bottom-edge diagonals  (row BOX_Y+BOX_H-2-i  →  i = BOX_Y+BOX_H-2-py)
+    int dB = BOX_Y + BOX_H - 2 - py;
+    if (dB >= 0 && dB < CORNER_CUT) {
+        if (px == BOX_X + 1 + dB || px == BOX_X + BOX_W - 2 - dB)
+            return true;
+    }
+    return false;
+}
+
+// ── Private: restore a horizontal band to its background colour ───────────────
+//
+//  Called during animation instead of clearScreen().
+//  Rows [y0 .. y1] (inclusive) are filled:
+//    • white (200,200,200) – inside the selection-box fill, not a cut pixel
+//    • black (0,0,0)       – everything else
+//
+//  The white box and its bevelled corners are never touched between frames.
+
+static void restoreBand(int y0, int y1) {
+    for (int py = y0; py <= y1; py++) {
+        if (py < 0 || py >= PANEL_HEIGHT) continue;
+
+        bool rowInBox = (py >= BOX_Y && py < BOX_Y + BOX_H);
+
+        for (int px = 0; px < PANEL_WIDTH; px++) {
+            bool inBoxFill = rowInBox
+                             && (px >= BOX_X)
+                             && (px < BOX_X + BOX_W)
+                             && !isCutPixel(px, py);
+
+            if (inBoxFill)
+                dma_display->drawPixelRGB888(px, py, 200, 200, 200);
+            else
+                dma_display->drawPixelRGB888(px, py, 0, 0, 0);
+        }
+    }
+}
+
 // ── Private: selection-box background ───────────────────────────────────────
 
 static void drawBackground() {
-
     // Solid light-grey fill
     for (int i = 0; i < BOX_W; i++)
         for (int j = 0; j < BOX_H; j++)
@@ -109,7 +168,7 @@ static void drawLetter(int screenX, int screenY, char c) {
             } else {
                 float dist    = fabsf(32.0f - (float)py);   // 0 at centre, 32 at edges
                 float ratio   = dist / 32.0f;               // 0.0 ... 1.0
-                float dimming = 255.0f * ratio * ratio;     // curved, 0 ... 255
+                float dimming = 255.0f * ratio;             // linear falloff
                 float p       = 255.0f - dimming;
                 if (p < 0.0f) p = 0.0f;
                 brightness = (uint8_t)p;
@@ -142,19 +201,44 @@ static void drawWord(const char* word, int screenY) {
 // ── Private: full frame renderer ────────────────────────────────────────────
 
 /**
- * Clear the display, draw the background box, then render 4 words.
+ * Render 4 words, with two possible strategies:
+ *
+ * animating = false  (full redraw, used for idle state)
+ *   • clearScreen() + drawBackground() – wipes everything, repaints box
+ *   • drawWord() × 4
+ *
+ * animating = true   (band-only update, called every animation frame)
+ *   • restoreBand() × 4 – erases only the 9-row strip around each word
+ *                         (8 glyph rows + 1 trailing row for the pixel
+ *                         that scrolled out at the bottom last frame)
+ *   • drawWord() × 4
+ *   The box, corners, and untouched rows are NEVER redrawn → no flicker.
  *
  * @param items    Menu item array.
  * @param count    Number of items.
  * @param snapIdx  Index that was "current" when the animation started.
  * @param offset   Vertical pixel offset: 0 = idle, negative = scrolling up.
+ * @param animating  true during scroll animation, false for full redraws.
  */
-static void drawFrame(MenuItem* items, int count, int snapIdx, int offset) {
-    dma_display->clearScreen();
-    drawBackground();
+static void drawFrame(MenuItem* items, int count, int snapIdx, int offset,
+                      bool animating = false) {
 
     // Safe modulo (handles negative indices)
     auto mod = [&](int i) -> int { return ((i % count) + count) % count; };
+
+    if (!animating) {
+        // Full redraw: clear everything then repaint the box
+        dma_display->clearScreen();
+        drawBackground();
+    } else {
+        // Animation: erase only the 9-row band around each word.
+        // The extra row (+8 instead of +7) covers the one trailing pixel
+        // that slips below the glyph as it scrolls upward each frame.
+        restoreBand(PREV_Y  + offset, PREV_Y  + offset + 8);
+        restoreBand(SEL_Y   + offset, SEL_Y   + offset + 8);
+        restoreBand(NEXT_Y  + offset, NEXT_Y  + offset + 8);
+        restoreBand(AFTER_Y + offset, AFTER_Y + offset + 8);
+    }
 
     drawWord(items[mod(snapIdx - 1)].label, PREV_Y  + offset);
     drawWord(items[mod(snapIdx    )].label, SEL_Y   + offset);
@@ -176,7 +260,8 @@ void showMenu(MenuItem* items, int count) {
     unsigned long pressStart = 0;
     bool longHandled = false;
 
-    drawFrame(items, count, currentIdx, 0);
+    // Initial full draw: clearScreen + box + words
+    drawFrame(items, count, currentIdx, 0, /*animating=*/false);
 
     while (true) {
         server.handleClient();
@@ -207,15 +292,19 @@ void showMenu(MenuItem* items, int count) {
         if (lastState == LOW && btnState == HIGH) {
             if (btnPressed && !longHandled) {
 
-                // Scroll animation
+                // Scroll animation.
+                // Start at f=1: frame 0 (offset=0) is already on screen,
+                // so the box is never redrawn during animation.
                 int snapIdx = currentIdx;
-                for (int f = 0; f <= ANIM_FRAMES; f++) {
-                    drawFrame(items, count, snapIdx, -(f * ANIM_STEP_PX));
+                for (int f = 1; f <= ANIM_FRAMES; f++) {
+                    drawFrame(items, count, snapIdx,
+                              -(f * ANIM_STEP_PX), /*animating=*/true);
                     delay(ANIM_DELAY_MS);
                 }
 
                 currentIdx = (currentIdx + 1) % count;
-                drawFrame(items, count, currentIdx, 0);
+                // Full redraw for a clean idle state
+                drawFrame(items, count, currentIdx, 0, /*animating=*/false);
             }
             btnPressed = false;
         }
