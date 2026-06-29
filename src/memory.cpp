@@ -1,0 +1,193 @@
+/**
+ * @file memory.cpp
+ * @brief Flash storage helpers: reading/writing images, GIFs, settings.
+ */
+
+#include "memory.h"
+
+/**
+ * @brief Read a stored image from SPIFFS and draw it on the matrix.
+ *
+ * Supports two raw formats based on file size:
+ *   - 8192 bytes  = RGB565 (2 bytes per pixel, 64x64)
+ *   - 12288 bytes = RGB888 (3 bytes per pixel, 64x64)
+ */
+void displayStoredImage() {
+    if (!SPIFFS.exists(STORED_FILE)) {
+        Serial.println("No image file found");
+        return;
+    }
+
+    File file = SPIFFS.open(STORED_FILE, "r");
+    if (!file) {
+        Serial.println("Failed to open image file");
+        return;
+    }
+
+    size_t size = file.size();
+    Serial.printf("Loading image: %d bytes\n", size);
+
+    dma_display->clearScreen();
+
+    if (size == 8192) {
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                uint8_t byte1 = file.read();
+                uint8_t byte2 = file.read();
+                uint16_t color = (byte1 << 8) | byte2;
+                dma_display->drawPixel(x, y, color);
+            }
+        }
+    } else if (size == 12288) {
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                uint8_t r = file.read();
+                uint8_t g = file.read();
+                uint8_t b = file.read();
+                dma_display->drawPixelRGB888(x, y, r, g, b);
+            }
+        }
+    }
+
+    file.close();
+    Serial.println("Image displayed from storage");
+}
+
+/**
+ * @brief Read the GIF playback speed from flash.
+ * @return Speed value (0.0 to 1.0), or 1.0 if no file exists.
+ */
+float ReadGifSpeed() {
+    if (!SPIFFS.exists(STORED_SPEED)) return 1.0f;
+
+    File file = SPIFFS.open(STORED_SPEED, "r");
+    if (!file) return 1.0f;
+
+    String line = file.readStringUntil('\n');
+    file.close();
+    line.trim();
+
+    if (!line.startsWith("speed=")) return 1.0f;
+    return line.substring(6).toFloat();
+}
+
+/**
+ * @brief Read the saved brightness from flash.
+ * @return Brightness 0-255, or 90 as default.
+ */
+uint8_t ReadBrightness() {
+    if (!SPIFFS.exists(STORED_BRIGHTNESS)) {
+        Serial.println("No saved brightness, using default 90");
+        return 90;
+    }
+
+    File file = SPIFFS.open(STORED_BRIGHTNESS, "r");
+    if (!file) {
+        Serial.println("Cannot open brightness file");
+        return 90;
+    }
+
+    String line = file.readStringUntil('\n');
+    file.close();
+    line.trim();
+
+    if (!line.startsWith("brightness=")) {
+        Serial.println("Bad brightness file format");
+        return 90;
+    }
+
+    line = line.substring(11);
+    uint8_t val = line.toInt();
+
+    Serial.print("Loaded brightness: ");
+    Serial.println(val);
+    return val;
+}
+
+/**
+ * @brief Load a GIF file from SPIFFS into RAM and start playing it.
+ *
+ * Frees any previously loaded GIF data before allocating new memory.
+ */
+void playStoredGif() {
+    if (!SPIFFS.exists(STORED_FILE)) {
+        Serial.println("No GIF file found");
+        return;
+    }
+
+    File file = SPIFFS.open(STORED_FILE, "r");
+    if (!file) {
+        Serial.println("Failed to open GIF file");
+        return;
+    }
+
+    gifSize = file.size();
+    Serial.printf("Loading GIF: %d bytes\n", gifSize);
+
+    if (gifData) free(gifData);
+
+    gifData = (uint8_t*)malloc(gifSize);
+    if (!gifData) {
+        Serial.println("Not enough memory for GIF");
+        file.close();
+        return;
+    }
+
+    file.read(gifData, gifSize);
+    file.close();
+
+    if (gif.open(gifData, gifSize, GIFDraw)) {
+        Serial.println("GIF playing from storage");
+        isPlayingGif = true;
+    } else {
+        Serial.println("Failed to open GIF");
+        free(gifData);
+        gifData = nullptr;
+    }
+}
+
+/**
+ * @brief Check the type file and display the stored content.
+ *
+ * Reads /type.txt to decide whether to show an image or play a GIF.
+ */
+void loadAndDisplayStored() {
+    if (!SPIFFS.exists(TYPE_FILE)) {
+        Serial.println("No stored content found");
+        return;
+    }
+
+    File typeFile = SPIFFS.open(TYPE_FILE, "r");
+    if (typeFile) {
+        currentType = typeFile.readString();
+        currentType.trim();
+        typeFile.close();
+        Serial.printf("Found stored content: %s\n", currentType.c_str());
+    }
+
+    if (currentType == "image") {
+        displayStoredImage();
+    } else if (currentType == "gif") {
+        playStoredGif();
+    }
+}
+
+/**
+ * @brief Mount SPIFFS (format on first use) and log storage stats.
+ */
+void setupSPIFFS() {
+    Serial.println("Mounting SPIFFS...");
+
+    if (!SPIFFS.begin(true)) {
+        Serial.println("SPIFFS mount failed!");
+        return;
+    }
+
+    Serial.println("SPIFFS mounted");
+
+    size_t totalBytes = SPIFFS.totalBytes();
+    size_t usedBytes  = SPIFFS.usedBytes();
+    Serial.printf("  Total: %d bytes\n", totalBytes);
+    Serial.printf("  Used:  %d bytes\n", usedBytes);
+    Serial.printf("  Free:  %d bytes\n", totalBytes - usedBytes);
+}
